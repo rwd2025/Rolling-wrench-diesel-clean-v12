@@ -1,0 +1,16 @@
+Rolling Wrench AI Cleanup Core
+
+Removed old test/build-note files.
+Disabled old V8.6/V8.7 AI fallback paths from controlling chat.
+Unified AI routing:
+- VIN -> Supabase truck-search, local fallback
+- Parts -> oracle-parts-search / verify-part-web
+- Quote -> build-quote, finance fallback
+- Invoice -> build-invoice, finance fallback
+- General -> diesel-doc-ai, Render fallback
+
+Still needed for full production:
+- Real VIN decoder/build sheet API
+- Reliable OCR/Vision backend
+- Vendor pricing API/search
+- Supabase tables for shared quote/invoice/customer links
