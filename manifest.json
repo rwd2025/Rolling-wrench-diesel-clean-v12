@@ -1,7 +1,7 @@
 {
-  "name": "Rolling Wrench AI Invoice OCR",
-  "short_name": "RW OCR",
-  "start_url": "./?v=invoice-photo-ocr-parts",
+  "name": "Rolling Wrench Workflow",
+  "short_name": "RW Workflow",
+  "start_url": "./?v=truck-photo-invoice-workflow",
   "display": "standalone",
   "background_color": "#07090d",
   "theme_color": "#10131a",

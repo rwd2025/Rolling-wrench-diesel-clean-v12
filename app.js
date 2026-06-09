@@ -7235,3 +7235,66 @@ document.addEventListener("click", function(e){
   st.textContent=`.rwd-ocr-table{display:grid;gap:7px}.rwd-ocr-head,.rwd-ocr-row{display:grid;grid-template-columns:1fr 1.5fr .45fr .7fr .7fr;gap:6px}.rwd-ocr-row input{padding:8px;border-radius:10px;font-size:13px}@media(max-width:650px){.rwd-ocr-head{display:none}.rwd-ocr-row{grid-template-columns:1fr}}`;
   document.head.appendChild(st);
 })();
+
+
+/* ===== RWD TRUCK PHOTO INVOICE WORKFLOW ===== */
+window.RWD_TRUCK_PHOTO_INVOICE_WORKFLOW="Truck Photo Invoice Workflow";
+
+(function(){
+  try{
+    state.trucks=Array.isArray(state.trucks)?state.trucks:[];
+    state.invoices=Array.isArray(state.invoices)?state.invoices:[];
+    state.quotes=Array.isArray(state.quotes)?state.quotes:[];
+    state.workorders=Array.isArray(state.workorders)?state.workorders:[];
+    state.partsBought=Array.isArray(state.partsBought)?state.partsBought:[];
+    state.truck=state.truck||{customer:"",unit:"",vin:"",engine:""};
+    state.settings=state.settings||{};
+    state.settings.laborRate=Number(state.settings.laborRate||135);
+    state.settings.shopSupplies=Number(state.settings.shopSupplies||25);
+    if(typeof saveState==="function")saveState();
+  }catch(e){}
+})();
+function rwdFlowSave(){try{if(typeof saveState==="function")saveState()}catch(e){}}
+function rwdFlowMoney(n){return "$"+Number(n||0).toFixed(2)}
+function rwdFlowId(p){return p+"-"+Date.now()+"-"+Math.random().toString(36).slice(2,6)}
+function rwdFlowEsc(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[m]))}
+function rwdFlowVIN(t){const m=String(t||"").toUpperCase().match(/\b[A-HJ-NPR-Z0-9]{17}\b/);return m?m[0]:""}
+function rwdFlowFindTruck(q){
+  q=String(q||"").trim().toLowerCase();
+  const vin=rwdFlowVIN(q);
+  const trucks=[...(state.trucks||[])];
+  if(state.truck)trucks.unshift(state.truck);
+  if(vin)return trucks.find(t=>String(t.vin||"").toUpperCase()===vin)||{vin,unit:vin,customer:"",engine:""};
+  const n=(q.match(/#?\s*(\d+)/)||[])[1];
+  if(n){const h=trucks.find(t=>String(t.unit||t.number||t.truckNumber||"").replace("#","").toLowerCase()===n);if(h)return h}
+  return trucks.find(t=>[t.unit,t.number,t.truckNumber,t.vin,t.customer].join(" ").toLowerCase().includes(q))||state.truck||{};
+}
+function rwdFlowReadPhoto(file){
+  if(typeof rwdOcrReadSmallPhoto==="function")return rwdOcrReadSmallPhoto(file);
+  return new Promise((resolve,reject)=>{const r=new FileReader();r.onerror=()=>reject(new Error("Could not read photo"));r.onload=()=>resolve(r.result);r.readAsDataURL(file)});
+}
+function rwdFlowNewDoc(type){
+  return{id:rwdFlowId(type==="invoice"?"RWI":type==="quote"?"RWQ":"RWO"),type,status:type==="invoice"?"Unpaid":type==="quote"?"Draft":"Open",date:new Date().toLocaleString(),customer:state.truck?.customer||"",truck:state.truck?.unit||"",vin:state.truck?.vin||"",engine:state.truck?.engine||"",work:"",notes:"",hours:0,rate:Number(state.settings?.laborRate||135),service:0,supplies:Number(state.settings?.shopSupplies||0),parts:0,partsLines:[],photos:[],total:0}
+}
+function rwdFlowCalc(d){d.parts=(d.partsLines||[]).reduce((a,p)=>a+Number(p.total||0),0);d.total=Number(d.hours||0)*Number(d.rate||0)+Number(d.parts||0)+Number(d.supplies||0)+Number(d.service||0);return d}
+function rwdFlowSaveDoc(d){rwdFlowCalc(d);const k=d.type==="invoice"?"invoices":d.type==="quote"?"quotes":"workorders";state[k]=Array.isArray(state[k])?state[k]:[];const i=state[k].findIndex(x=>x.id===d.id);if(i>=0)state[k][i]=d;else state[k].unshift(d);rwdFlowSave()}
+function rwdFlowPaper(d){rwdFlowCalc(d);const title=d.type==="invoice"?"INVOICE":d.type==="quote"?"QUOTE":"WORK ORDER";return`<section class="paper"><h2>ROLLING WRENCH DIESEL ${title}</h2><p><b>Customer:</b> ${rwdFlowEsc(d.customer||"")}</p><p><b>Truck:</b> ${rwdFlowEsc(d.truck||"")} ${d.vin?`• <b>VIN:</b> ${rwdFlowEsc(d.vin)}`:""}</p><p><b>Work:</b> ${rwdFlowEsc(d.work||"")}</p><div class="line"><span>Labor</span><b>${d.hours} hrs @ ${rwdFlowMoney(d.rate)}</b><b>${rwdFlowMoney(d.hours*d.rate)}</b></div><div class="line"><span>Parts from invoices/photos</span><b>${(d.partsLines||[]).length}</b><b>${rwdFlowMoney(d.parts)}</b></div><div class="line"><span>Supplies/Fees</span><b></b><b>${rwdFlowMoney(d.supplies)}</b></div><div class="line"><span>Service Call</span><b>${Number(d.service)>0?"ON":"OFF"}</b><b>${rwdFlowMoney(d.service)}</b></div>${(d.partsLines||[]).length?`<h3>Parts</h3>`+(d.partsLines||[]).map(p=>`<div class="line"><span>${rwdFlowEsc(p.part||"")} ${rwdFlowEsc(p.desc||"")}</span><b>${p.qty||1} @ ${rwdFlowMoney(p.unit||p.total)}</b><b>${rwdFlowMoney(p.total)}</b></div>`).join(""):""}${d.notes?`<p><b>Notes:</b> ${rwdFlowEsc(d.notes)}</p>`:""}${(d.photos||[]).length?`<h3>Photos</h3><div class="rwd-photo-grid">${d.photos.map(p=>`<figure><img src="${p.data}"><figcaption>${rwdFlowEsc(p.name||"Photo")}</figcaption></figure>`).join("")}</div>`:""}<div class="total">${title==="INVOICE"?"TOTAL DUE":"ESTIMATED TOTAL"} ${rwdFlowMoney(d.total)}</div><div class="disclaimer"><b>Disclaimer:</b> Verify VIN, parts, and supplier pricing before ordering. Price may change for hidden damage, added labor, or approved extra work.</div></section>`}
+function rwdFlowOpen(type){
+  const root=document.getElementById("screen")||document.getElementById("app")||document.body;
+  let d=rwdFlowNewDoc(type);window.__rwdFlowDoc=d;
+  root.innerHTML=`<div class="page-head"><button class="action-btn" id="flowBack">← Back</button><h2>${type==="invoice"?"Invoice":type==="quote"?"Quote":"Work Order"} Builder</h2></div><section class="card orange"><h3>Truck / VIN</h3><label>Truck #, customer, or VIN</label><input id="flowTruckSearch"><div class="row"><button class="primary" id="flowPull">Pull Truck Info</button><button id="flowClear">Clear</button></div><div id="flowTruckInfo" class="note"></div></section><section class="card"><h3>Job Info</h3><div class="grid2"><div><label>Customer</label><input id="flowCustomer"></div><div><label>Truck / Unit</label><input id="flowTruck"></div><div><label>VIN</label><input id="flowVin"></div><div><label>Engine</label><input id="flowEngine"></div><div><label>Labor Hours</label><input id="flowHours" type="number" step=".1" value="0"></div><div><label>Labor Rate</label><input id="flowRate" type="number" value="${d.rate}"></div><div><label>Supplies / Fees</label><input id="flowSupplies" type="number" value="${d.supplies}"></div><div><label>Service Call</label><input id="flowService" type="number" value="0"></div></div><label>Work Done / Requested</label><textarea id="flowWork"></textarea><label>Notes</label><textarea id="flowNotes"></textarea></section><section class="card orange"><h3>Photos</h3><div class="grid2"><button class="primary" id="flowInvoicePhoto">Add Parts Invoice / Receipt Photo</button><button id="flowWorkPhoto">Add Work Photo / Note Photo</button></div><div id="flowPhotoBox"></div></section><section class="card"><h3>Parts Pulled From Photos</h3><div id="flowPartsBox"></div><div class="row"><button class="primary" id="flowPreview">Preview</button><button class="good" id="flowSave">Save</button></div></section><div id="flowPreviewBox"></div>`;
+  function collect(){d.customer=flowCustomer.value;d.truck=flowTruck.value;d.vin=flowVin.value;d.engine=flowEngine.value;d.hours=Number(flowHours.value||0);d.rate=Number(flowRate.value||0);d.supplies=Number(flowSupplies.value||0);d.service=Number(flowService.value||0);d.work=flowWork.value;d.notes=flowNotes.value;rwdFlowCalc(d);return d}
+  function refresh(){collect();flowPartsBox.innerHTML=(d.partsLines||[]).length?(d.partsLines||[]).map((p,i)=>`<div class="part-row"><input value="${rwdFlowEsc(p.part||"")}"><input value="${rwdFlowEsc(p.desc||"")}"><input readonly value="${rwdFlowMoney(p.total)}"></div>`).join(""):"No parts pulled yet.";flowPhotoBox.innerHTML=(d.photos||[]).length?`<div class="rwd-photo-grid">${d.photos.map(p=>`<figure><img src="${p.data}"><figcaption>${rwdFlowEsc(p.name||"Photo")}</figcaption></figure>`).join("")}</div>`:"";flowPreviewBox.innerHTML=rwdFlowPaper(d)}
+  flowBack.onclick=()=>{if(typeof setRoute==="function")setRoute("home");else location.hash="#home"};
+  flowClear.onclick=()=>{flowTruckSearch.value=""};
+  flowPull.onclick=()=>{const t=rwdFlowFindTruck(flowTruckSearch.value);d.customer=t.customer||"";d.truck=t.unit||t.number||t.truckNumber||"";d.vin=t.vin||"";d.engine=t.engine||"";flowCustomer.value=d.customer;flowTruck.value=d.truck;flowVin.value=d.vin;flowEngine.value=d.engine;flowTruckInfo.textContent=[d.customer,d.truck,d.vin,d.engine].filter(Boolean).join(" • ");refresh()};
+  async function addPhoto(mode){const inp=document.createElement("input");inp.type="file";inp.accept="image/*";inp.multiple=true;inp.capture="environment";inp.onchange=async()=>{for(const file of Array.from(inp.files||[])){const data=await rwdFlowReadPhoto(file);d.photos.unshift({id:rwdFlowId("PHOTO"),name:file.name,date:new Date().toLocaleString(),data,mode});if(mode==="invoice"&&typeof rwdOcrVisionPhoto==="function"){try{const vision=await rwdOcrVisionPhoto(data,file.name);if(typeof rwdOcrLinesFromVision==="function"){const lines=rwdOcrLinesFromVision(vision);d.partsLines.unshift(...lines);}}catch(e){}}}refresh()};inp.click()}
+  flowInvoicePhoto.onclick=()=>addPhoto("invoice");
+  flowWorkPhoto.onclick=()=>addPhoto("work");
+  flowPreview.onclick=refresh;
+  flowSave.onclick=()=>{collect();rwdFlowSaveDoc(d);alert("Saved")};
+  Array.from(root.querySelectorAll("input,textarea")).forEach(el=>el.addEventListener("input",refresh));
+  refresh();
+}
+document.addEventListener("click",function(e){const b=e.target.closest("button,.button,[role='button'],a");if(!b)return;const t=String(b.textContent||b.value||b.getAttribute("data-route")||"").toLowerCase();if(t.includes("new invoice")||t==="invoice"||t==="invoices"){e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();rwdFlowOpen("invoice");return false}if(t.includes("new quote")||t==="quote"||t==="quotes"){e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();rwdFlowOpen("quote");return false}if(t.includes("new work order")||t.includes("work order")||t.includes("workorder")){e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();rwdFlowOpen("workorder");return false}},true);
+(function(){const st=document.createElement("style");st.textContent=`.rwd-photo-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}.rwd-photo-grid figure{background:#eef2f7;color:#111;margin:0;padding:8px;border-radius:12px}.rwd-photo-grid img{width:100%;border-radius:10px}.part-row{display:grid;grid-template-columns:1fr 1.4fr .8fr;gap:6px;margin:6px 0}.part-row input{padding:8px;border-radius:9px}@media(max-width:700px){.part-row{grid-template-columns:1fr}}`;document.head.appendChild(st)})();
