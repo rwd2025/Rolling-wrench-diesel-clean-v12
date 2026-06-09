@@ -6340,3 +6340,71 @@ try {
   rw95AskSupabase = rwdCleanAI;
   window.rw95AskSupabase = rwdCleanAI;
 } catch(e) {}
+
+
+/* ===== RWD PRODUCTION BACKEND INTEGRATION ===== */
+window.RWD_PRODUCTION_BACKEND_VERSION = "Production Backend Integration";
+
+async function rwdProdFn(name,payload){
+  const key=(state&&state.settings&&state.settings.supabaseAnonKey)||localStorage.getItem("RW_SUPABASE_ANON_KEY")||RWD_SUPABASE_ANON_CLEAN;
+  const res=await fetch("https://uxpkqwcmvtqvubibbrek.supabase.co/functions/v1/"+name,{method:"POST",headers:{"Content-Type":"application/json","apikey":key,"Authorization":"Bearer "+key},body:JSON.stringify(payload||{})});
+  const txt=await res.text();let data;try{data=JSON.parse(txt)}catch(e){data={text:txt}}
+  if(!res.ok)throw new Error(data.error||data.message||txt||name+" failed");
+  return data;
+}
+function rwdProdAnswer(d){if(!d)return"";if(typeof d==="string")return d;return d.answer||d.response||d.message||d.text||d.result||d.content||JSON.stringify(d,null,2)}
+function rwdProdVin(t){const m=String(t||"").toUpperCase().match(/\b[A-HJ-NPR-Z0-9]{17}\b/);return m?m[0]:""}
+function rwdProdLocalVin(vin){vin=rwdProdVin(vin)||String(vin||"").toUpperCase();const make=vin.startsWith("1NK")?"Kenworth":vin.startsWith("1XP")?"Peterbilt":vin.startsWith("3AK")||vin.startsWith("1FU")?"Freightliner":vin.startsWith("2HS")||vin.startsWith("3HS")||vin.startsWith("1HT")?"International":"Truck";return"# VIN / Build Sheet\n\n- **VIN:** "+vin+"\n- **Make:** "+make+"\n- **Type:** Truck\n- **Source:** local fallback\n- **Confidence:** Medium\n\nVerify full OEM/dealer build sheet before ordering parts."}
+async function rwdProdVinBuildSheet(vin){
+  try{return rwdProdAnswer(await rwdProdFn("vin-build-sheet",{vin,context:{truck:state.truck,settings:state.settings}}))}
+  catch(e){return rwdProdLocalVin(vin)+"\n\nVIN backend note: "+e.message}
+}
+async function rwdProdVendorSearch(q){
+  try{
+    const d=await rwdProdFn("vendor-price-search",{part_query:q,vendors:["Palmer Trucks","FleetPride","TruckPro","NAPA","Kenworth Dealer","Rush Truck Centers"],context:{truck:state.truck,settings:state.settings}});
+    let out="# Vendor Price Check — "+q+"\n\n";
+    const rows=d.results||[];
+    if(!rows.length)return out+"No verified vendor prices returned. Call vendors before ordering.";
+    rows.forEach(v=>{out+="## "+(v.vendor||"Vendor")+"\n- Part: "+(v.part_number||q)+"\n- Price: "+(v.price?"$"+Number(v.price).toFixed(2):"Call/verify")+"\n- Availability: "+(v.availability||"Verify")+"\n\n"});
+    return out;
+  }catch(e){return"Vendor lookup unavailable: "+e.message}
+}
+async function rwdProdCreateShare(docType,index){
+  const list=docType==="invoice"?state.invoices:state.quotes;const doc=list&&list[index];if(!doc)return alert("Document not found");
+  try{
+    const d=await rwdProdFn("create-share-link",{doc_type:docType,document:doc});
+    doc.sharedLink=d.url||d.link||"";doc.shareId=d.id||doc.share_id||doc.shareId;if(typeof saveState==="function")saveState();
+    await navigator.clipboard?.writeText(doc.sharedLink);alert("Customer link copied:\n\n"+doc.sharedLink);
+  }catch(e){
+    const payload=btoa(unescape(encodeURIComponent(JSON.stringify({doc_type:docType,document:doc}))));
+    doc.sharedLink=location.origin+location.pathname+"#shared?d="+encodeURIComponent(payload);if(typeof saveState==="function")saveState();
+    await navigator.clipboard?.writeText(doc.sharedLink).catch(()=>null);alert("Portable link copied:\n\n"+doc.sharedLink+"\n\nBackend share failed: "+e.message);
+  }
+}
+function rwdProdRenderShared(){
+  if(!location.hash.startsWith("#shared"))return false;
+  const params=new URLSearchParams(location.hash.split("?")[1]||"");let obj=null;
+  try{obj=JSON.parse(decodeURIComponent(escape(atob(params.get("d")))))}catch(e){}
+  const app=document.getElementById("app")||document.body;
+  if(!obj||!obj.document){app.innerHTML="<main class='screen'><section class='card error'><h2>Document Not Found</h2><p>Ask Rolling Wrench Diesel to resend the link.</p></section></main>";return true}
+  const d=obj.document;const paper=typeof rwdStableQuotePaper==="function"?rwdStableQuotePaper(d,obj.doc_type==="invoice"?"INVOICE":"QUOTE"):"<pre>"+JSON.stringify(d,null,2)+"</pre>";
+  app.innerHTML="<main class='screen'><section class='card orange'><h2>Customer Review</h2></section>"+paper+"<section class='card'><h3>Approve / Sign</h3><label>Printed Name</label><input id='shareSigner' value='"+(d.customer||"")+"'><canvas id='sharePad' class='sigpad' style='background:white;width:100%;height:180px;border-radius:16px'></canvas><button class='primary' id='shareApprove'>Approve & Sign</button></section></main>";
+  let sig="",c=document.getElementById("sharePad"),ctx=c.getContext("2d"),down=false,last=null;
+  function fit(){const r=c.getBoundingClientRect();c.width=r.width*devicePixelRatio;c.height=180*devicePixelRatio;ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);ctx.lineWidth=3;ctx.lineCap="round";ctx.strokeStyle="#111"}setTimeout(fit,50);
+  function p(e){const r=c.getBoundingClientRect(),t=e.touches?e.touches[0]:e;return{x:t.clientX-r.left,y:t.clientY-r.top}}
+  function start(e){e.preventDefault();down=true;last=p(e)}function move(e){if(!down)return;e.preventDefault();const pt=p(e);ctx.beginPath();ctx.moveTo(last.x,last.y);ctx.lineTo(pt.x,pt.y);ctx.stroke();last=pt;sig=c.toDataURL("image/png")}function stop(){down=false}
+  c.addEventListener("mousedown",start);c.addEventListener("mousemove",move);c.addEventListener("mouseup",stop);c.addEventListener("touchstart",start,{passive:false});c.addEventListener("touchmove",move,{passive:false});c.addEventListener("touchend",stop);
+  document.getElementById("shareApprove").onclick=async()=>{d.status="Approved";d.signature={name:document.getElementById("shareSigner").value,data:sig,date:new Date().toLocaleString()};try{await rwdProdFn("approve-shared-document",{document:d,doc_type:obj.doc_type,signature:d.signature})}catch(e){}app.innerHTML="<main class='screen'><section class='card orange'><h2>Approved</h2><p>Thank you. Rolling Wrench Diesel received the approval.</p></section>"+(typeof rwdStableQuotePaper==="function"?rwdStableQuotePaper(d,"SIGNED "+obj.doc_type.toUpperCase()):"")+"</main>"};
+  return true;
+}
+window.addEventListener("hashchange",()=>setTimeout(rwdProdRenderShared,10));setTimeout(rwdProdRenderShared,50);
+
+const rwdProdOldAI=typeof rwdCleanAI==="function"?rwdCleanAI:null;
+async function rwdProdAI(prompt,files){
+  const q=String(prompt||""),vin=rwdProdVin(q);
+  if((/decode|build sheet|what truck|vin/i.test(q))&&vin)return await rwdProdVinBuildSheet(vin);
+  if(/vendor|price check|where can i get|local price|supplier/i.test(q))return await rwdProdVendorSearch(typeof rwdCleanPartQuery==="function"?rwdCleanPartQuery(q):q);
+  if(rwdProdOldAI)return await rwdProdOldAI(prompt,files);
+  return"RW AI production backend loaded.";
+}
+window.rw92AskBackend=rwdProdAI;try{rw92AskBackend=rwdProdAI}catch(e){}

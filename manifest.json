@@ -1,7 +1,7 @@
 {
-  "name": "Rolling Wrench AI Cleanup",
-  "short_name": "RW AI Clean",
-  "start_url": "./?v=ai-cleanup-core",
+  "name": "Rolling Wrench AI Production",
+  "short_name": "RW AI Prod",
+  "start_url": "./?v=production-backend",
   "display": "standalone",
   "background_color": "#07090d",
   "theme_color": "#10131a",

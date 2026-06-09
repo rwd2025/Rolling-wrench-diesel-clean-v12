@@ -1,0 +1,1 @@
+Run SUPABASE_PRODUCTION_BACKEND.sql. Deploy functions in supabase-functions. Set secrets: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, PUBLIC_APP_URL. Optional later: VIN_API_URL, Google/Serp/vendor API keys, OpenAI/Gemini keys for OCR.
