@@ -6408,3 +6408,185 @@ async function rwdProdAI(prompt,files){
   return"RW AI production backend loaded.";
 }
 window.rw92AskBackend=rwdProdAI;try{rw92AskBackend=rwdProdAI}catch(e){}
+
+
+/* ===== RWD VIN DECODER FIX ===== */
+window.RWD_VIN_FIX_VERSION = "VIN Decoder Fix";
+
+function rwdVinFixClean(text){
+  const m = String(text || "").toUpperCase().match(/\b[A-HJ-NPR-Z0-9]{17}\b/);
+  return m ? m[0] : "";
+}
+function rwdVinFixYear(vin){
+  const map = {A:2010,B:2011,C:2012,D:2013,E:2014,F:2015,G:2016,H:2017,J:2018,K:2019,L:2020,M:2021,N:2022,P:2023,R:2024,S:2025,T:2026,V:2027,W:2028,X:2029,Y:2030,1:2001,2:2002,3:2003,4:2004,5:2005,6:2006,7:2007,8:2008,9:2009};
+  return map[String(vin || "")[9]] || "";
+}
+function rwdVinFixMake(vin){
+  vin = String(vin || "").toUpperCase();
+  if(vin.startsWith("1NK") || vin.startsWith("1XK")) return "Kenworth";
+  if(vin.startsWith("1XP")) return "Peterbilt";
+  if(vin.startsWith("3AK") || vin.startsWith("1FU")) return "Freightliner";
+  if(vin.startsWith("4V4")) return "Volvo";
+  if(vin.startsWith("1M1")) return "Mack";
+  if(vin.startsWith("2HS") || vin.startsWith("3HS") || vin.startsWith("1HT") || vin.startsWith("1HS")) return "International";
+  if(vin.startsWith("1GB") || vin.startsWith("1GC")) return "Chevrolet/GMC";
+  if(vin.startsWith("1FD") || vin.startsWith("1FT")) return "Ford";
+  return "Truck";
+}
+function rwdVinFixModelGuess(vin){
+  vin = String(vin || "").toUpperCase();
+  if(vin.startsWith("1NKD")) return "Kenworth vocational / T-series";
+  if(vin.startsWith("1NKW")) return "Kenworth W900/T800 family";
+  if(vin.startsWith("1XPC")) return "Peterbilt conventional";
+  if(vin.startsWith("3AKJ")) return "Freightliner Cascadia";
+  if(vin.startsWith("4V4NC9")) return "Volvo VNL";
+  return "Unknown / verify with OEM";
+}
+function rwdVinFixLocalDecode(vin){
+  vin = rwdVinFixClean(vin) || String(vin || "").toUpperCase().trim();
+  const valid = /^[A-HJ-NPR-Z0-9]{17}$/.test(vin);
+  return {
+    vin: vin,
+    valid: valid,
+    year: valid ? rwdVinFixYear(vin) : "",
+    make: valid ? rwdVinFixMake(vin) : "",
+    model: valid ? rwdVinFixModelGuess(vin) : "",
+    type: "Truck",
+    source: "Local VIN fallback",
+    confidence: valid ? "Medium" : "Low",
+    engine: "",
+    transmission: "",
+    notes: [
+      "Basic heavy-duty VIN decode is working.",
+      "For exact engine, transmission, axles, wheelbase, and factory options, connect a paid OEM/build-sheet API.",
+      "Always verify before ordering VIN-specific parts."
+    ]
+  };
+}
+async function rwdVinFixBackendDecode(vin){
+  const clean = rwdVinFixClean(vin);
+  if(!clean) throw new Error("Enter a valid 17-character VIN");
+  try{
+    if(typeof rwdProdFn === "function"){
+      const d = await rwdProdFn("vin-build-sheet", {vin:clean, context:{truck:state.truck, settings:state.settings}});
+      return Object.assign(rwdVinFixLocalDecode(clean), d || {}, {vin:clean});
+    }
+    if(typeof rwdCleanFn === "function"){
+      const d = await rwdCleanFn("truck-search", {vin:clean, query:clean, prompt:"Decode VIN " + clean, context:{truck:state.truck, settings:state.settings}});
+      return Object.assign(rwdVinFixLocalDecode(clean), d || {}, {vin:clean});
+    }
+  }catch(e){
+    const local = rwdVinFixLocalDecode(clean);
+    local.backend_error = e.message;
+    return local;
+  }
+  return rwdVinFixLocalDecode(clean);
+}
+function rwdVinFixResultHtml(d){
+  const notes = Array.isArray(d.notes) ? d.notes : [];
+  return `
+  <section class="card orange">
+    <h2>VIN Decode Result</h2>
+    <div class="grid2">
+      <div><label>VIN</label><input readonly value="${String(d.vin||"")}"></div>
+      <div><label>Valid</label><input readonly value="${d.valid === false ? "NO" : "YES"}"></div>
+      <div><label>Year</label><input readonly value="${String(d.year||"Unknown")}"></div>
+      <div><label>Make</label><input readonly value="${String(d.make||"Unknown")}"></div>
+      <div><label>Model</label><input readonly value="${String(d.model||"Unknown")}"></div>
+      <div><label>Type</label><input readonly value="${String(d.type||"Truck")}"></div>
+      <div><label>Engine</label><input id="vinFixEngine" value="${String(d.engine||"")}"></div>
+      <div><label>Transmission</label><input id="vinFixTrans" value="${String(d.transmission||"")}"></div>
+    </div>
+    <p class="note"><b>Source:</b> ${String(d.source||"")} • <b>Confidence:</b> ${String(d.confidence||"")}</p>
+    ${d.backend_error ? `<section class="card error"><b>Backend note:</b> ${String(d.backend_error)}</section>` : ""}
+    ${notes.length ? `<h3>Notes</h3><ul>${notes.map(n=>`<li>${String(n)}</li>`).join("")}</ul>` : ""}
+    <div class="row">
+      <button class="good" onclick="rwdVinFixSaveActive('${String(d.vin||"")}','${String(d.make||"")}','${String(d.year||"")}','${String(d.model||"")}')">Save Active Truck</button>
+      <button onclick="rwdVinFixBuildQuote('${String(d.vin||"")}')">Build Quote With VIN</button>
+    </div>
+  </section>`;
+}
+function rwdVinFixSaveActive(vin, make, year, model){
+  try{
+    state.truck = state.truck || {};
+    state.truck.vin = vin;
+    state.truck.unit = [year, make, model].filter(Boolean).join(" ");
+    state.truck.engine = document.getElementById("vinFixEngine")?.value || state.truck.engine || "";
+    state.truck.transmission = document.getElementById("vinFixTrans")?.value || state.truck.transmission || "";
+    if(typeof saveState === "function") saveState();
+    else if(typeof save === "function") save();
+    if(typeof toast === "function") toast("Active truck saved");
+    else alert("Active truck saved");
+  }catch(e){ alert("Save failed: " + e.message); }
+}
+function rwdVinFixBuildQuote(vin){
+  rwdVinFixSaveActive(vin, "", "", "");
+  if(typeof setRoute === "function") setRoute("quotes");
+  else location.hash = "#quotes";
+}
+async function rwdVinFixRun(){
+  const input = document.getElementById("vinFixInput");
+  const box = document.getElementById("vinFixResult");
+  const vin = rwdVinFixClean(input?.value || "");
+  if(!vin){ box.innerHTML = `<section class="card error"><b>Enter a valid 17-character VIN.</b></section>`; return; }
+  box.innerHTML = `<section class="card"><h3>Decoding VIN...</h3></section>`;
+  const d = await rwdVinFixBackendDecode(vin);
+  box.innerHTML = rwdVinFixResultHtml(d);
+}
+function rwdVinFixPage(){
+  const root = document.getElementById("screen") || document.getElementById("app") || document.body;
+  root.innerHTML = `
+    <div class="page-head">
+      <button class="action-btn" id="vinFixBack">← Back</button>
+      <h2>VIN Decoder</h2>
+    </div>
+    <section class="card orange">
+      <h3>Decode / Save Truck</h3>
+      <label>VIN</label>
+      <input id="vinFixInput" placeholder="1NKDX0TX31J879011" value="${state?.truck?.vin && state.truck.vin !== "NONE" ? state.truck.vin : ""}">
+      <div class="row">
+        <button class="primary" onclick="rwdVinFixRun()">Decode VIN</button>
+        <button onclick="document.getElementById('vinFixInput').value=''">Clear</button>
+      </div>
+    </section>
+    <div id="vinFixResult"></div>`;
+  const back = document.getElementById("vinFixBack");
+  if(back) back.onclick = () => { if(typeof setRoute === "function") setRoute("home"); else location.hash="#home"; };
+}
+document.addEventListener("click", function(e){
+  const btn = e.target.closest("button, .button, [role='button'], a");
+  if(!btn) return;
+  const t = String(btn.textContent || btn.value || btn.getAttribute("data-route") || "").toLowerCase();
+  if(t.includes("vin lookup") || t === "vin" || t.includes("decode vin") || t.includes("truck / vin")){
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    rwdVinFixPage();
+    return false;
+  }
+}, true);
+
+const rwdVinFixOldAI = typeof rw92AskBackend === "function" ? rw92AskBackend : null;
+async function rwdVinFixAI(prompt, files){
+  const q = String(prompt || "");
+  const vin = rwdVinFixClean(q);
+  if(vin && /decode|vin|what truck|build sheet/i.test(q)){
+    const d = await rwdVinFixBackendDecode(vin);
+    let out = "# VIN Decode\n";
+    out += "- VIN: " + d.vin + "\n";
+    out += "- Valid: " + (d.valid === false ? "NO" : "YES") + "\n";
+    out += "- Year: " + (d.year || "Unknown") + "\n";
+    out += "- Make: " + (d.make || "Unknown") + "\n";
+    out += "- Model: " + (d.model || "Unknown") + "\n";
+    out += "- Type: " + (d.type || "Truck") + "\n";
+    out += "- Source: " + (d.source || "") + "\n";
+    out += "- Confidence: " + (d.confidence || "") + "\n";
+    if(d.backend_error) out += "\nBackend note: " + d.backend_error + "\n";
+    out += "\nVerify full OEM/dealer build sheet before ordering parts.";
+    return out;
+  }
+  if(rwdVinFixOldAI) return await rwdVinFixOldAI(prompt, files);
+  return "VIN decoder ready.";
+}
+window.rw92AskBackend = rwdVinFixAI;
+try{ rw92AskBackend = rwdVinFixAI; }catch(e){}
