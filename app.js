@@ -6590,3 +6590,351 @@ async function rwdVinFixAI(prompt, files){
 }
 window.rw92AskBackend = rwdVinFixAI;
 try{ rw92AskBackend = rwdVinFixAI; }catch(e){}
+
+
+/* ===== RWD DOCUMENT BUILDER + CAMERA ATTACHMENTS =====
+   Adds:
+   - Work Orders, Quotes, Invoices
+   - Camera/photo attachments per document
+   - Shows attached photos
+   - Build professional document from typed/speech text
+*/
+window.RWD_DOC_CAMERA_VERSION = "Document Builder Camera Attachments";
+
+(function rwdDocBoot(){
+  try{
+    state.workorders = Array.isArray(state.workorders) ? state.workorders : [];
+    state.quotes = Array.isArray(state.quotes) ? state.quotes : [];
+    state.invoices = Array.isArray(state.invoices) ? state.invoices : [];
+    state.documentPhotos = Array.isArray(state.documentPhotos) ? state.documentPhotos : [];
+    state.settings = state.settings || {};
+    state.settings.laborRate = Number(state.settings.laborRate || 135);
+    state.settings.serviceCall = Number(state.settings.serviceCall || 250);
+    state.settings.shopSupplies = Number(state.settings.shopSupplies || 25);
+    state.truck = state.truck || {customer:"",unit:"",vin:"",engine:""};
+    if(typeof saveState === "function") saveState();
+  }catch(e){}
+})();
+
+function rwdDocSave(){
+  try{ if(typeof saveState === "function") saveState(); else localStorage.setItem("RWD_DOC_STATE", JSON.stringify(state)); }catch(e){}
+}
+function rwdDocMoney(n){ return "$" + Number(n||0).toFixed(2); }
+function rwdDocId(prefix){ return prefix + "-" + Date.now() + "-" + Math.random().toString(36).slice(2,6); }
+function rwdDocEsc(s){ return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[m])); }
+function rwdDocVIN(text){ const m=String(text||"").toUpperCase().match(/\b[A-HJ-NPR-Z0-9]{17}\b/); return m?m[0]:""; }
+
+function rwdDocParse(text){
+  const s = String(text||"").replace(/\r/g," ").replace(/\n/g," ");
+  const f = {customer:"",truck:"",vin:"",job:"",complaint:"",cause:"",correction:"",labor:null,rate:null,parts:null,supplies:null,service:null,notes:""};
+  let m;
+  m=s.match(/customer\s*[:\-]?\s*(.*?)(?=\s+(?:truck|vin|unit|labor|hours|hrs|rate|parts|supplies|service|job|work|description|repair|complaint|cause|correction|notes)\s*[:\-]?|$)/i); if(m) f.customer=m[1].trim();
+  m=s.match(/(?:truck|unit)\s*[:\-]?\s*(.*?)(?=\s+(?:customer|vin|labor|hours|hrs|rate|parts|supplies|service|job|work|description|repair|complaint|cause|correction|notes)\s*[:\-]?|$)/i); if(m) f.truck=m[1].trim();
+  f.vin = rwdDocVIN(s);
+  if(!f.truck && f.vin) f.truck = f.vin;
+  m=s.match(/(?:job|work|description|repair)\s*[:\-]\s*(.*?)(?=\s+(?:complaint|cause|correction|labor|hours|hrs|parts|notes)\s*[:\-]|$)/i); if(m) f.job=m[1].trim();
+  m=s.match(/complaint\s*[:\-]\s*(.*?)(?=\s+(?:cause|correction|labor|hours|hrs|parts|notes)\s*[:\-]|$)/i); if(m) f.complaint=m[1].trim();
+  m=s.match(/cause\s*[:\-]\s*(.*?)(?=\s+(?:complaint|correction|labor|hours|hrs|parts|notes)\s*[:\-]|$)/i); if(m) f.cause=m[1].trim();
+  m=s.match(/correction\s*[:\-]\s*(.*?)(?=\s+(?:complaint|cause|labor|hours|hrs|parts|notes)\s*[:\-]|$)/i); if(m) f.correction=m[1].trim();
+  m=s.match(/(?:labor|hours|hrs)\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)/i); if(m) f.labor=Number(m[1]);
+  m=s.match(/(?:rate|labor rate)\s*[:\-]?\s*\$?\s*([0-9]+(?:\.[0-9]+)?)/i); if(m) f.rate=Number(m[1]);
+  m=s.match(/(?:parts total|parts)\s*[:\-]?\s*\$?\s*([0-9,]+(?:\.[0-9]+)?)/i); if(m) f.parts=Number(m[1].replace(/,/g,""));
+  m=s.match(/(?:shop supplies|supplies)\s*[:\-]?\s*\$?\s*([0-9,]+(?:\.[0-9]+)?)/i); if(m) f.supplies=Number(m[1].replace(/,/g,""));
+  if(/\b(in[- ]house|shop job|service call\s*[:\-]?\s*(off|no|none|0|\$0))\b/i.test(s)) f.service=0;
+  else { m=s.match(/service call\s*[:\-]?\s*\$?\s*([0-9,]+(?:\.[0-9]+)?)/i); if(m) f.service=Number(m[1].replace(/,/g,"")); else if(/service call\s*[:\-]?\s*(on|yes)/i.test(s)) f.service=Number(state.settings.serviceCall||250); }
+  m=s.match(/notes?\s*[:\-]\s*(.+)$/i); if(m) f.notes=m[1].trim();
+  if(!f.job){
+    if(/clutch/i.test(s)) f.job="Clutch replacement";
+    else if(/water pump/i.test(s)) f.job="Water pump replacement";
+    else if(/brake/i.test(s)) f.job="Brake repair";
+    else f.job=s.replace(/build\s+(invoice|quote|work\s*order)/ig,"").trim();
+  }
+  return f;
+}
+
+function rwdDocPartsTotal(){
+  const partsBought = Array.isArray(state.partsBought) ? state.partsBought : [];
+  return partsBought.reduce((a,p)=>a+Number(p.total||0),0);
+}
+function rwdDocPartsLines(){
+  return Array.isArray(state.partsBought) ? state.partsBought.slice() : [];
+}
+function rwdDocBuild(type, text){
+  const f = rwdDocParse(text);
+  const rate = Number(f.rate || state.settings.laborRate || 135);
+  const hours = Number(f.labor || 0);
+  const parts = f.parts !== null ? Number(f.parts) : rwdDocPartsTotal();
+  const supplies = f.supplies !== null ? Number(f.supplies) : Number(state.settings.shopSupplies || 0);
+  const service = f.service === null ? 0 : Number(f.service || 0);
+  const total = hours*rate + parts + supplies + service;
+  const doc = {
+    id:rwdDocId(type==="invoice"?"RWI":type==="quote"?"RWQ":"RWO"),
+    type,
+    status:type==="invoice"?"Unpaid":type==="quote"?"Draft":"Open",
+    date:new Date().toLocaleString(),
+    customer:f.customer || state.truck?.customer || "",
+    truck:f.truck || state.truck?.unit || "",
+    vin:f.vin || state.truck?.vin || "",
+    job:f.job || "Repair work",
+    complaint:f.complaint || "",
+    cause:f.cause || "",
+    correction:f.correction || "",
+    notes:f.notes || "",
+    hours, rate, parts, supplies, service, total,
+    partsLines:rwdDocPartsLines(),
+    photos:[],
+    signature:null
+  };
+  if(doc.customer || doc.vin || doc.truck){
+    state.truck = state.truck || {};
+    if(doc.customer) state.truck.customer = doc.customer;
+    if(doc.truck) state.truck.unit = doc.truck;
+    if(doc.vin) state.truck.vin = doc.vin;
+  }
+  return doc;
+}
+function rwdDocList(type){
+  if(type==="invoice") return state.invoices;
+  if(type==="quote") return state.quotes;
+  return state.workorders;
+}
+function rwdDocSaveDoc(type, doc){
+  const list = rwdDocList(type);
+  const existing = list.findIndex(x=>x.id===doc.id);
+  if(existing>=0) list[existing]=doc; else list.unshift(doc);
+  rwdDocSave();
+}
+function rwdDocPaper(doc){
+  const labor = Number(doc.hours||0)*Number(doc.rate||0);
+  const title = doc.type==="invoice" ? "INVOICE" : doc.type==="quote" ? "QUOTE" : "WORK ORDER";
+  return `<section class="paper rwd-doc-paper">
+    <h2>ROLLING WRENCH DIESEL ${title}</h2>
+    <p class="muted">${rwdDocEsc(doc.date||"")} • ${rwdDocEsc(doc.id||"")}</p>
+    <p><b>Customer:</b> ${rwdDocEsc(doc.customer||"")}</p>
+    <p><b>Truck/Unit:</b> ${rwdDocEsc(doc.truck||"")} ${doc.vin?` • <b>VIN:</b> ${rwdDocEsc(doc.vin)}`:""}</p>
+    <p><b>Work:</b> ${rwdDocEsc(doc.job||"")}</p>
+    ${doc.complaint?`<p><b>Complaint:</b> ${rwdDocEsc(doc.complaint)}</p>`:""}
+    ${doc.cause?`<p><b>Cause:</b> ${rwdDocEsc(doc.cause)}</p>`:""}
+    ${doc.correction?`<p><b>Correction:</b> ${rwdDocEsc(doc.correction)}</p>`:""}
+    <div class="line"><span>Labor</span><b>${Number(doc.hours||0)} hrs @ ${rwdDocMoney(doc.rate||0)}</b><b>${rwdDocMoney(labor)}</b></div>
+    <div class="line"><span>Parts Purchased</span><b>${(doc.partsLines||[]).length} items</b><b>${rwdDocMoney(doc.parts||0)}</b></div>
+    <div class="line"><span>Shop Supplies / Fees</span><b></b><b>${rwdDocMoney(doc.supplies||0)}</b></div>
+    <div class="line"><span>Service Call</span><b>${Number(doc.service||0)>0?"ON":"OFF"}</b><b>${rwdDocMoney(doc.service||0)}</b></div>
+    ${rwdDocPartsHtml(doc.partsLines||[])}
+    ${rwdDocPhotosHtml(doc.photos||[])}
+    <div class="total">${rwdDocMoney(doc.total||0)}</div>
+    ${doc.notes?`<p><b>Notes:</b> ${rwdDocEsc(doc.notes)}</p>`:""}
+    <div class="disclaimer"><b>Disclaimer:</b> Estimate/invoice may change due to hidden damage, seized hardware, additional labor, parts availability, taxes/fees, and approved additional work.</div>
+    ${doc.signature?.data?`<p><b>Signed:</b> ${rwdDocEsc(doc.signature.name||"")} • ${rwdDocEsc(doc.signature.date||"")}</p><img src="${doc.signature.data}" style="max-width:260px;border:1px solid #aaa;border-radius:8px">`:""}
+  </section>`;
+}
+function rwdDocPartsHtml(lines){
+  if(!lines || !lines.length) return "";
+  return `<h3>Parts Bought So Far</h3>` + lines.map(p=>`<div class="line"><span>${rwdDocEsc(p.part||"")} ${rwdDocEsc(p.desc||"")}</span><b>${Number(p.qty||1)} @ ${rwdDocMoney(p.unit||p.total||0)}</b><b>${rwdDocMoney(p.total||0)}</b></div>`).join("");
+}
+function rwdDocPhotosHtml(photos){
+  if(!photos || !photos.length) return "";
+  return `<h3>Attached Photos / Invoices</h3><div class="rwd-photo-grid">` + photos.map(p=>`<figure><img src="${p.data||p.preview}" alt="${rwdDocEsc(p.name||"photo")}"><figcaption>${rwdDocEsc(p.name||"Photo")}<br><small>${rwdDocEsc(p.date||"")}</small></figcaption></figure>`).join("") + `</div>`;
+}
+function rwdDocScreen(type, doc){
+  doc = doc || rwdDocBuild(type, "");
+  const title = type==="invoice" ? "Invoice" : type==="quote" ? "Quote" : "Work Order";
+  const root = document.getElementById("screen") || document.getElementById("app") || document.body;
+  root.innerHTML = `
+    <div class="page-head">
+      <button class="action-btn" id="rwdDocBack">← Back</button>
+      <h2>${title} Builder</h2>
+    </div>
+    <section class="card orange">
+      <h3>Speak / Type</h3>
+      <textarea id="rwdDocText" placeholder="Build ${title}: Customer Eddie LePrie VIN 1NKDX0TX31J879011 14.5 hours in-house clutch replacement"></textarea>
+      <div class="row">
+        <button class="primary" id="rwdDocBuildBtn">Build Professional ${title}</button>
+        <button id="rwdDocClearBtn">Clear</button>
+      </div>
+    </section>
+    <section class="card">
+      <h3>${title} Details</h3>
+      <div class="grid2">
+        <div><label>Customer</label><input id="rwdDocCustomer" value="${rwdDocEsc(doc.customer)}"></div>
+        <div><label>Truck / Unit</label><input id="rwdDocTruck" value="${rwdDocEsc(doc.truck)}"></div>
+        <div><label>VIN</label><input id="rwdDocVin" value="${rwdDocEsc(doc.vin)}"></div>
+        <div><label>Job</label><input id="rwdDocJob" value="${rwdDocEsc(doc.job)}"></div>
+        <div><label>Labor Hours</label><input id="rwdDocHours" type="number" step=".1" value="${doc.hours}"></div>
+        <div><label>Labor Rate</label><input id="rwdDocRate" type="number" value="${doc.rate}"></div>
+        <div><label>Parts Total</label><input id="rwdDocParts" type="number" value="${doc.parts}"></div>
+        <div><label>Shop Supplies / Fees</label><input id="rwdDocSupplies" type="number" value="${doc.supplies}"></div>
+      </div>
+      <label class="row" style="margin-top:12px"><input id="rwdDocServiceOn" type="checkbox" ${Number(doc.service||0)>0?"checked":""} style="width:auto"> Service Call</label>
+      <input id="rwdDocService" type="number" value="${doc.service||0}">
+      <label>Complaint</label><textarea id="rwdDocComplaint">${rwdDocEsc(doc.complaint||"")}</textarea>
+      <label>Cause</label><textarea id="rwdDocCause">${rwdDocEsc(doc.cause||"")}</textarea>
+      <label>Correction / Work Performed</label><textarea id="rwdDocCorrection">${rwdDocEsc(doc.correction||"")}</textarea>
+      <label>Notes</label><textarea id="rwdDocNotes">${rwdDocEsc(doc.notes||"")}</textarea>
+    </section>
+    <section class="card orange">
+      <h3>Photos / Vendor Invoices</h3>
+      <p class="note">Add photos of parts invoices, truck, repair, or paperwork. Photos show on this ${title.toLowerCase()}.</p>
+      <input id="rwdDocPhotoInput" type="file" accept="image/*" multiple>
+      <div id="rwdDocPhotoStatus" class="note">${(doc.photos||[]).length} photo(s) attached.</div>
+      <div id="rwdDocPhotos">${rwdDocPhotosHtml(doc.photos||[])}</div>
+    </section>
+    <section class="card">
+      <div class="row">
+        <button class="primary" id="rwdDocPreviewBtn">Preview</button>
+        <button class="good" id="rwdDocSaveBtn">Save ${title}</button>
+        <button id="rwdDocSignBtn">Customer Sign</button>
+      </div>
+    </section>
+    <div id="rwdDocPreview">${rwdDocPaper(doc)}</div>
+  `;
+  let current = doc;
+  function collect(){
+    const serviceOn = document.getElementById("rwdDocServiceOn").checked;
+    const service = serviceOn ? Number(document.getElementById("rwdDocService").value||0) : 0;
+    const hours=Number(document.getElementById("rwdDocHours").value||0), rate=Number(document.getElementById("rwdDocRate").value||0), parts=Number(document.getElementById("rwdDocParts").value||0), supplies=Number(document.getElementById("rwdDocSupplies").value||0);
+    current = Object.assign(current,{
+      customer:document.getElementById("rwdDocCustomer").value,
+      truck:document.getElementById("rwdDocTruck").value,
+      vin:document.getElementById("rwdDocVin").value,
+      job:document.getElementById("rwdDocJob").value,
+      hours,rate,parts,supplies,service,
+      complaint:document.getElementById("rwdDocComplaint").value,
+      cause:document.getElementById("rwdDocCause").value,
+      correction:document.getElementById("rwdDocCorrection").value,
+      notes:document.getElementById("rwdDocNotes").value,
+      partsLines:rwdDocPartsLines(),
+      total:hours*rate+parts+supplies+service
+    });
+    return current;
+  }
+  function refresh(){ collect(); document.getElementById("rwdDocPreview").innerHTML = rwdDocPaper(current); }
+  document.getElementById("rwdDocBack").onclick = () => { if(typeof setRoute === "function") setRoute("home"); else location.hash="#home"; };
+  document.getElementById("rwdDocClearBtn").onclick = () => { document.getElementById("rwdDocText").value=""; };
+  document.getElementById("rwdDocBuildBtn").onclick = () => {
+    const built = rwdDocBuild(type, document.getElementById("rwdDocText").value);
+    built.photos = current.photos || [];
+    current = Object.assign(current, built);
+    rwdDocScreen(type, current);
+  };
+  document.getElementById("rwdDocPreviewBtn").onclick = refresh;
+  document.getElementById("rwdDocSaveBtn").onclick = () => { refresh(); rwdDocSaveDoc(type,current); alert(title+" saved"); };
+  document.getElementById("rwdDocSignBtn").onclick = () => { refresh(); rwdDocSignScreen(type,current); };
+  document.getElementById("rwdDocServiceOn").onchange = () => {
+    const on=document.getElementById("rwdDocServiceOn").checked;
+    const svc=document.getElementById("rwdDocService");
+    if(!on) svc.value=0; else if(!Number(svc.value)) svc.value=Number(state.settings.serviceCall||250);
+    refresh();
+  };
+  Array.from(root.querySelectorAll("input,textarea")).forEach(el=>{
+    if(el.id!=="rwdDocText" && el.id!=="rwdDocPhotoInput") el.addEventListener("input", refresh);
+  });
+  document.getElementById("rwdDocPhotoInput").onchange = async function(){
+    const files = Array.from(this.files||[]);
+    if(!files.length) return;
+    document.getElementById("rwdDocPhotoStatus").textContent = "Loading photos...";
+    for(const file of files){
+      const data = await rwdDocReadSmallPhoto(file);
+      current.photos = current.photos || [];
+      current.photos.unshift({id:rwdDocId("PHOTO"),name:file.name,type:file.type,date:new Date().toLocaleString(),data});
+      state.documentPhotos.unshift({docId:current.id,name:file.name,date:new Date().toLocaleString(),data});
+    }
+    rwdDocSave();
+    document.getElementById("rwdDocPhotoStatus").textContent = current.photos.length + " photo(s) attached.";
+    document.getElementById("rwdDocPhotos").innerHTML = rwdDocPhotosHtml(current.photos);
+    refresh();
+  };
+}
+function rwdDocReadSmallPhoto(file){
+  return new Promise((resolve,reject)=>{
+    const r=new FileReader();
+    r.onerror=()=>reject(new Error("Could not read photo"));
+    r.onload=()=>{
+      const img=new Image();
+      img.onerror=()=>reject(new Error("Could not load photo"));
+      img.onload=()=>{
+        const max=1100; let w=img.width,h=img.height; const scale=Math.min(1,max/Math.max(w,h)); w=Math.round(w*scale); h=Math.round(h*scale);
+        const c=document.createElement("canvas"); c.width=w; c.height=h; c.getContext("2d").drawImage(img,0,0,w,h);
+        resolve(c.toDataURL("image/jpeg",0.72));
+      };
+      img.src=r.result;
+    };
+    r.readAsDataURL(file);
+  });
+}
+function rwdDocSignScreen(type, doc){
+  const root = document.getElementById("screen") || document.getElementById("app") || document.body;
+  root.innerHTML = `<div class="page-head"><button class="action-btn" id="rwdSignBack">← Back</button><h2>Customer Signature</h2></div>${rwdDocPaper(doc)}<section class="card orange"><label>Printed Name</label><input id="rwdSignName" value="${rwdDocEsc(doc.customer||"")}"><canvas id="rwdSignPad" class="sigpad" style="background:white;width:100%;height:180px;border-radius:16px"></canvas><div class="row"><button class="good" id="rwdSignSave">Save Signature</button></div></section>`;
+  let sig="",c=document.getElementById("rwdSignPad"),ctx=c.getContext("2d"),down=false,last=null;
+  function fit(){const r=c.getBoundingClientRect();c.width=r.width*devicePixelRatio;c.height=180*devicePixelRatio;ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);ctx.lineWidth=3;ctx.lineCap="round";ctx.strokeStyle="#111"} setTimeout(fit,50);
+  function p(e){const r=c.getBoundingClientRect(),t=e.touches?e.touches[0]:e;return{x:t.clientX-r.left,y:t.clientY-r.top}}
+  function start(e){e.preventDefault();down=true;last=p(e)} function move(e){if(!down)return;e.preventDefault();const pt=p(e);ctx.beginPath();ctx.moveTo(last.x,last.y);ctx.lineTo(pt.x,pt.y);ctx.stroke();last=pt;sig=c.toDataURL("image/png")} function stop(){down=false}
+  c.addEventListener("mousedown",start);c.addEventListener("mousemove",move);c.addEventListener("mouseup",stop);c.addEventListener("touchstart",start,{passive:false});c.addEventListener("touchmove",move,{passive:false});c.addEventListener("touchend",stop);
+  document.getElementById("rwdSignBack").onclick=()=>rwdDocScreen(type,doc);
+  document.getElementById("rwdSignSave").onclick=()=>{doc.signature={name:document.getElementById("rwdSignName").value,data:sig,date:new Date().toLocaleString()};rwdDocSaveDoc(type,doc);rwdDocScreen(type,doc);};
+}
+function rwdDocListScreen(type){
+  const list = rwdDocList(type);
+  const title = type==="invoice"?"Invoices":type==="quote"?"Quotes":"Work Orders";
+  const root = document.getElementById("screen") || document.getElementById("app") || document.body;
+  root.innerHTML = `<div class="page-head"><button class="action-btn" id="rwdListBack">← Back</button><h2>${title}</h2></div><section class="card orange"><button class="primary" id="rwdNewDoc">New ${title.slice(0,-1)}</button></section>` + (list.length ? list.map((d,i)=>`<section class="card">${rwdDocPaper(d)}<div class="row"><button onclick="rwdDocScreen('${type}', state.${type==="invoice"?"invoices":type==="quote"?"quotes":"workorders"}[${i}])">Open/Edit</button><button onclick="rwdDocSignScreen('${type}', state.${type==="invoice"?"invoices":type==="quote"?"quotes":"workorders"}[${i}])">Sign</button><button class="bad" onclick="state.${type==="invoice"?"invoices":type==="quote"?"quotes":"workorders"}.splice(${i},1);rwdDocSave();rwdDocListScreen('${type}')">Delete</button></div></section>`).join("") : `<section class="card">No ${title.toLowerCase()} yet.</section>`);
+  document.getElementById("rwdListBack").onclick=()=>{if(typeof setRoute==="function")setRoute("home");else location.hash="#home"};
+  document.getElementById("rwdNewDoc").onclick=()=>rwdDocScreen(type);
+}
+
+/* Force quote/invoice/workorder buttons to working document builder */
+document.addEventListener("click", function(e){
+  const btn=e.target.closest("button,.button,[role='button'],a");
+  if(!btn) return;
+  const t=String(btn.textContent||btn.value||btn.getAttribute("data-route")||"").toLowerCase();
+  if(t.includes("work order") || t.includes("workorder")){
+    e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+    rwdDocListScreen("workorder"); return false;
+  }
+  if((t.includes("invoice") || t==="invoices") && !t.includes("photo")){
+    e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+    rwdDocListScreen("invoice"); return false;
+  }
+  if((t.includes("quote") || t==="quotes") && !t.includes("photo")){
+    e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+    rwdDocListScreen("quote"); return false;
+  }
+}, true);
+
+/* Voice/text command through AI: build invoice / quote / work order */
+const rwdDocOldAI = typeof rw92AskBackend === "function" ? rw92AskBackend : null;
+async function rwdDocAI(prompt, files){
+  const q=String(prompt||"");
+  if(/build\s+(an?\s+)?work\s*order|build\s+workorder/i.test(q)){
+    const doc=rwdDocBuild("workorder", q); rwdDocSaveDoc("workorder", doc); return "# Work Order Built\n\n"+rwdDocPlain(doc);
+  }
+  if(/build\s+(an?\s+)?invoice|create\s+(an?\s+)?invoice/i.test(q)){
+    const doc=rwdDocBuild("invoice", q); rwdDocSaveDoc("invoice", doc); return "# Invoice Built\n\n"+rwdDocPlain(doc);
+  }
+  if(/build\s+(a\s+)?quote|create\s+(a\s+)?quote|estimate/i.test(q)){
+    const doc=rwdDocBuild("quote", q); rwdDocSaveDoc("quote", doc); return "# Quote Built\n\n"+rwdDocPlain(doc);
+  }
+  if(rwdDocOldAI) return await rwdDocOldAI(prompt, files);
+  return "Document builder ready.";
+}
+function rwdDocPlain(doc){
+  return [
+    "Customer: "+(doc.customer||""),
+    "Truck: "+(doc.truck||""),
+    "VIN: "+(doc.vin||""),
+    "Work: "+(doc.job||""),
+    "Labor: "+doc.hours+" hrs @ "+rwdDocMoney(doc.rate),
+    "Parts: "+rwdDocMoney(doc.parts),
+    "Service Call: "+rwdDocMoney(doc.service),
+    "Total: "+rwdDocMoney(doc.total)
+  ].join("\n");
+}
+window.rw92AskBackend = rwdDocAI;
+try{ rw92AskBackend = rwdDocAI; }catch(e){}
+
+/* Add missing CSS dynamically */
+(function(){
+  const style=document.createElement("style");
+  style.textContent = `.rwd-photo-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:10px 0}.rwd-photo-grid figure{margin:0;background:#eef2f7;color:#111;border-radius:12px;padding:8px}.rwd-photo-grid img{width:100%;border-radius:10px;display:block}.rwd-photo-grid figcaption{font-size:12px;margin-top:5px}.rwd-doc-paper{max-width:950px;margin:12px auto}`;
+  document.head.appendChild(style);
+})();

@@ -1,7 +1,7 @@
 {
-  "name": "Rolling Wrench AI VIN Fix",
-  "short_name": "RW VIN Fix",
-  "start_url": "./?v=vin-decoder-fix",
+  "name": "Rolling Wrench AI Documents",
+  "short_name": "RW Docs",
+  "start_url": "./?v=doc-camera-builder",
   "display": "standalone",
   "background_color": "#07090d",
   "theme_color": "#10131a",
