@@ -1,7 +1,7 @@
 {
-  "name": "Rolling Wrench AI Documents",
-  "short_name": "RW Docs",
-  "start_url": "./?v=doc-camera-builder",
+  "name": "Rolling Wrench AI Invoice OCR",
+  "short_name": "RW OCR",
+  "start_url": "./?v=invoice-photo-ocr-parts",
   "display": "standalone",
   "background_color": "#07090d",
   "theme_color": "#10131a",

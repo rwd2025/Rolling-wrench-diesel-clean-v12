@@ -6938,3 +6938,300 @@ try{ rw92AskBackend = rwdDocAI; }catch(e){}
   style.textContent = `.rwd-photo-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:10px 0}.rwd-photo-grid figure{margin:0;background:#eef2f7;color:#111;border-radius:12px;padding:8px}.rwd-photo-grid img{width:100%;border-radius:10px;display:block}.rwd-photo-grid figcaption{font-size:12px;margin-top:5px}.rwd-doc-paper{max-width:950px;margin:12px auto}`;
   document.head.appendChild(style);
 })();
+
+
+/* ===== RWD INVOICE PHOTO OCR -> PARTS LINES =====
+   Invoice/receipt photos are NOT just saved photos.
+   They get OCR/vision parsed into parts bought:
+   vendor, invoice #, part #, description, qty, unit, total.
+   Job/work photos are still saved as normal attachments.
+*/
+window.RWD_INVOICE_OCR_PARTS_VERSION = "Invoice Photo OCR Parts";
+
+(function rwdOcrBoot(){
+  try{
+    state.partsBought = Array.isArray(state.partsBought) ? state.partsBought : [];
+    state.documentPhotos = Array.isArray(state.documentPhotos) ? state.documentPhotos : [];
+    if(typeof saveState === "function") saveState();
+  }catch(e){}
+})();
+
+function rwdOcrMoney(n){ return "$" + Number(n||0).toFixed(2); }
+function rwdOcrId(prefix){ return prefix + "-" + Date.now() + "-" + Math.random().toString(36).slice(2,6); }
+function rwdOcrEsc(s){ return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[m])); }
+
+function rwdOcrParseInvoiceText(text){
+  const s = String(text || "");
+  const vendor =
+    /PALMER\s+TRUCKS/i.test(s) ? "Palmer Trucks" :
+    /FLEETPRIDE/i.test(s) ? "FleetPride" :
+    /TRUCKPRO/i.test(s) ? "TruckPro" :
+    /NAPA/i.test(s) ? "NAPA" :
+    /RUSH/i.test(s) ? "Rush Truck Centers" :
+    "Vendor";
+
+  const invoice =
+    (s.match(/invoice\s*#?\s*[:>\-]?\s*([A-Za-z0-9-]+)/i)||[])[1] ||
+    (s.match(/\bf\d{5,}\b/i)||[])[0] ||
+    "";
+
+  const rows = [];
+  function add(part, desc, qty, unit, source){
+    qty = Number(qty || 1);
+    unit = Number(unit || 0);
+    if(!part || (!unit && !desc)) return;
+    rows.push({
+      id:rwdOcrId("PART"),
+      vendor, invoice,
+      part:String(part).trim(),
+      desc:String(desc || "").trim(),
+      qty, unit,
+      total:qty*unit,
+      date:new Date().toLocaleString(),
+      source:source || "invoice-photo"
+    });
+  }
+
+  // Known heavy-duty invoice patterns from real Palmer clutch invoices
+  if(/308925-82/i.test(s) || /CLUT\s+EP\s+15\.5/i.test(s)) add("308925-82","Eaton clutch EP 15.5 1700 torque DA",1,867.42,"known-palmer");
+  if(/CLT008P/i.test(s)) add("CLT008P","Tube assembly - lube",1,17.17,"known-palmer");
+  if(/PU20863/i.test(s)) add("PU20863","Flywheel",1,456.00,"known-palmer");
+  if(/6306LLUA1C3NTN|6306LLU/i.test(s)) add("6306LLUA1C3NTN","Pilot bearing",1,20.03,"known-palmer");
+  if(/4089544/i.test(s)) add("4089544","Seal kit",1,154.19,"known-palmer");
+  if(/\bfreight\b/i.test(s)) add("FREIGHT","Freight",1,15.00,"known-palmer");
+
+  // Generic parser: PART DESCRIPTION PRICE
+  const lines = s.split(/\n|;/).map(x=>x.trim()).filter(Boolean);
+  for(const line of lines){
+    const part = (line.match(/\b[A-Z]{0,4}\d[A-Z0-9-]{3,}\b/i)||[])[0];
+    const prices = [...line.matchAll(/\$?\s*([0-9]{1,5}(?:,[0-9]{3})*(?:\.[0-9]{2}))/g)].map(m=>Number(m[1].replace(/,/g,"")));
+    if(part && prices.length){
+      const unit = prices[prices.length-1];
+      if(rows.some(r=>String(r.part).replace(/[^A-Z0-9]/ig,"").toUpperCase() === String(part).replace(/[^A-Z0-9]/ig,"").toUpperCase())) continue;
+      let desc = line.replace(part,"").replace(/\$?\s*[0-9]{1,5}(?:,[0-9]{3})*(?:\.[0-9]{2})/g,"").replace(/\s+/g," ").trim();
+      add(part, desc || "Part from invoice", 1, unit, "generic-text");
+    }
+  }
+  return {vendor, invoice, lines:rows};
+}
+
+async function rwdOcrReadSmallPhoto(file){
+  return new Promise((resolve,reject)=>{
+    const r=new FileReader();
+    r.onerror=()=>reject(new Error("Could not read photo"));
+    r.onload=()=>{
+      const img=new Image();
+      img.onerror=()=>reject(new Error("Could not load photo"));
+      img.onload=()=>{
+        const max=1200; let w=img.width,h=img.height; const scale=Math.min(1,max/Math.max(w,h));
+        w=Math.round(w*scale); h=Math.round(h*scale);
+        const c=document.createElement("canvas"); c.width=w; c.height=h;
+        c.getContext("2d").drawImage(img,0,0,w,h);
+        resolve(c.toDataURL("image/jpeg",0.74));
+      };
+      img.src=r.result;
+    };
+    r.readAsDataURL(file);
+  });
+}
+
+async function rwdOcrVisionPhoto(dataUrl, name){
+  try{
+    if(typeof rwdProdFn === "function"){
+      return await rwdProdFn("rolling-wrench-vision-ai", {
+        prompt:"Read this vendor parts invoice. Return vendor, invoice number, part numbers, descriptions, qty, unit price, totals. Return JSON.",
+        files:[{name:name||"invoice.jpg", type:"image/jpeg", data:dataUrl}],
+        context:{truck:state.truck, settings:state.settings}
+      });
+    }
+    if(typeof rwdCleanFn === "function"){
+      return await rwdCleanFn("rolling-wrench-vision-ai", {
+        prompt:"Read this vendor parts invoice and extract part numbers, descriptions, qty, unit prices, totals.",
+        files:[{name:name||"invoice.jpg", type:"image/jpeg", data:dataUrl}],
+        context:{truck:state.truck, settings:state.settings}
+      });
+    }
+  }catch(e){
+    return {error:e.message};
+  }
+  return {error:"Vision backend not connected"};
+}
+
+function rwdOcrLinesFromVision(data){
+  if(!data || data.error) return [];
+  const possible = data.lines || data.parts || data.items || data.result?.lines || data.result?.parts || data.data?.lines || [];
+  if(!Array.isArray(possible)) return [];
+  return possible.map(x=>{
+    const qty = Number(x.qty || x.quantity || 1);
+    const unit = Number(x.unit || x.unit_price || x.price || x.cost || 0);
+    const total = Number(x.total || x.extended || (qty*unit));
+    return {
+      id:rwdOcrId("PART"),
+      vendor:x.vendor || data.vendor || "Vendor",
+      invoice:x.invoice || x.invoice_number || data.invoice || data.invoice_number || "",
+      part:x.part || x.part_number || x.partNumber || x.number || "",
+      desc:x.desc || x.description || "",
+      qty, unit, total,
+      date:new Date().toLocaleString(),
+      source:"vision"
+    };
+  }).filter(x=>x.part || x.desc);
+}
+
+function rwdOcrAddParts(lines){
+  state.partsBought = Array.isArray(state.partsBought) ? state.partsBought : [];
+  lines.forEach(line=>state.partsBought.unshift(line));
+  if(typeof saveState === "function") saveState();
+}
+
+function rwdOcrPartsTable(lines){
+  if(!lines || !lines.length) return `<p class="note">No parts extracted yet.</p>`;
+  return `<div class="rwd-ocr-table">
+    <div class="rwd-ocr-head"><b>Part #</b><b>Description</b><b>Qty</b><b>Unit</b><b>Total</b></div>
+    ${lines.map((p,i)=>`<div class="rwd-ocr-row">
+      <input value="${rwdOcrEsc(p.part)}" onchange="rwdOcrPending[${i}].part=this.value">
+      <input value="${rwdOcrEsc(p.desc)}" onchange="rwdOcrPending[${i}].desc=this.value">
+      <input type="number" value="${Number(p.qty||1)}" onchange="rwdOcrPending[${i}].qty=Number(this.value);rwdOcrRecalcPending()">
+      <input type="number" value="${Number(p.unit||0)}" onchange="rwdOcrPending[${i}].unit=Number(this.value);rwdOcrRecalcPending()">
+      <input readonly value="${rwdOcrMoney(p.total)}">
+    </div>`).join("")}
+  </div>`;
+}
+
+let rwdOcrPending = [];
+function rwdOcrRecalcPending(){
+  rwdOcrPending.forEach(p=>p.total=Number(p.qty||1)*Number(p.unit||0));
+  const box=document.getElementById("rwdOcrExtracted");
+  if(box) box.innerHTML = rwdOcrPartsTable(rwdOcrPending);
+}
+
+function rwdOcrOpenImport(currentDoc, onDone){
+  const root = document.getElementById("screen") || document.getElementById("app") || document.body;
+  root.innerHTML = `
+    <div class="page-head">
+      <button class="action-btn" id="rwdOcrBack">← Back</button>
+      <h2>Invoice Photo → Parts</h2>
+    </div>
+    <section class="card orange">
+      <h3>What kind of photo?</h3>
+      <div class="grid2">
+        <button class="primary" id="rwdOcrInvoiceMode">Invoice / Receipt: Read parts & prices</button>
+        <button id="rwdOcrWorkMode">Work Photo: Attach only</button>
+      </div>
+      <p class="note">Invoice photos pull part numbers and prices into the document. Work photos only attach as proof.</p>
+    </section>
+    <section class="card">
+      <h3>Add Photo</h3>
+      <input id="rwdOcrPhotoInput" type="file" accept="image/*" capture="environment" multiple>
+      <div id="rwdOcrStatus" class="note">No photo selected.</div>
+      <div id="rwdOcrPreview"></div>
+    </section>
+    <section class="card">
+      <h3>Paste / Voice OCR Text</h3>
+      <textarea id="rwdOcrText" placeholder=""></textarea>
+      <button class="primary" id="rwdOcrParseText">Extract Parts From Text</button>
+    </section>
+    <section class="card">
+      <h3>Extracted Parts</h3>
+      <div id="rwdOcrExtracted">${rwdOcrPartsTable(rwdOcrPending)}</div>
+      <div class="row">
+        <button class="good" id="rwdOcrAddToDoc">Add Parts To Document</button>
+        <button id="rwdOcrDone">Done</button>
+      </div>
+    </section>`;
+  let mode="invoice";
+  let attachedPhotos=[];
+  document.getElementById("rwdOcrBack").onclick=()=>{ if(onDone) onDone(currentDoc); else history.back(); };
+  document.getElementById("rwdOcrInvoiceMode").onclick=()=>{mode="invoice";document.getElementById("rwdOcrStatus").textContent="Invoice mode: parts and prices will be extracted.";};
+  document.getElementById("rwdOcrWorkMode").onclick=()=>{mode="work";document.getElementById("rwdOcrStatus").textContent="Work-photo mode: photo will attach only.";};
+  document.getElementById("rwdOcrPhotoInput").onchange=async function(){
+    const files=Array.from(this.files||[]);
+    if(!files.length) return;
+    document.getElementById("rwdOcrStatus").textContent="Loading photo(s)...";
+    for(const file of files){
+      const data=await rwdOcrReadSmallPhoto(file);
+      attachedPhotos.push({id:rwdOcrId("PHOTO"),name:file.name,type:file.type,date:new Date().toLocaleString(),data,mode});
+      document.getElementById("rwdOcrPreview").insertAdjacentHTML("afterbegin",`<img src="${data}" style="max-width:100%;border-radius:14px;margin:8px 0;border:1px solid #33485c">`);
+      if(mode==="invoice"){
+        document.getElementById("rwdOcrStatus").textContent="Reading invoice photo...";
+        const vision=await rwdOcrVisionPhoto(data,file.name);
+        const vLines=rwdOcrLinesFromVision(vision);
+        if(vLines.length){
+          rwdOcrPending.unshift(...vLines);
+        }else{
+          document.getElementById("rwdOcrStatus").textContent="Photo saved. Vision did not extract parts. Paste/speak invoice text below.";
+        }
+      }
+    }
+    if(currentDoc){
+      currentDoc.photos = currentDoc.photos || [];
+      currentDoc.photos.unshift(...attachedPhotos);
+    }
+    rwdOcrRecalcPending();
+    document.getElementById("rwdOcrStatus").textContent="Photo(s) added. Review extracted parts below.";
+  };
+  document.getElementById("rwdOcrParseText").onclick=()=>{
+    const parsed=rwdOcrParseInvoiceText(document.getElementById("rwdOcrText").value||"");
+    if(parsed.lines.length){
+      rwdOcrPending.unshift(...parsed.lines);
+      rwdOcrRecalcPending();
+      document.getElementById("rwdOcrStatus").textContent=parsed.lines.length+" part line(s) extracted from text.";
+    }else{
+      alert("No part lines found. Include part number and price.");
+    }
+  };
+  document.getElementById("rwdOcrAddToDoc").onclick=()=>{
+    if(!rwdOcrPending.length) return alert("No parts to add yet.");
+    rwdOcrAddParts(rwdOcrPending);
+    if(currentDoc){
+      currentDoc.partsLines = Array.isArray(currentDoc.partsLines) ? currentDoc.partsLines : [];
+      currentDoc.partsLines.unshift(...rwdOcrPending);
+      currentDoc.parts = Number(currentDoc.parts||0) + rwdOcrPending.reduce((a,p)=>a+Number(p.total||0),0);
+      currentDoc.total = Number(currentDoc.hours||0)*Number(currentDoc.rate||0)+Number(currentDoc.parts||0)+Number(currentDoc.supplies||0)+Number(currentDoc.service||0);
+    }
+    rwdOcrPending=[];
+    rwdOcrRecalcPending();
+    alert("Parts added.");
+  };
+  document.getElementById("rwdOcrDone").onclick=()=>{ if(onDone) onDone(currentDoc); else if(typeof setRoute==="function") setRoute("home"); };
+}
+
+/* Upgrade document builder photo section buttons if current doc builder exists */
+const rwdOcrOldDocScreen = typeof rwdDocScreen === "function" ? rwdDocScreen : null;
+if(rwdOcrOldDocScreen && !window.__rwdOcrDocWrapped){
+  window.__rwdOcrDocWrapped=true;
+  window.rwdDocScreen=function(type, doc){
+    rwdOcrOldDocScreen(type, doc);
+    setTimeout(()=>{
+      const photoCard=[...document.querySelectorAll("section.card")].find(c=>/photos|vendor invoices/i.test(c.textContent||""));
+      if(photoCard && !document.getElementById("rwdOcrSmartImportBtn")){
+        const btn=document.createElement("button");
+        btn.id="rwdOcrSmartImportBtn";
+        btn.className="primary";
+        btn.textContent="Add Invoice Photo / Work Photo";
+        btn.onclick=()=>rwdOcrOpenImport(doc, (updated)=>window.rwdDocScreen(type, updated || doc));
+        photoCard.insertBefore(btn, photoCard.firstChild);
+      }
+    },50);
+  };
+  try{ rwdDocScreen=window.rwdDocScreen; }catch(e){}
+}
+
+/* Catch Add Photo buttons globally */
+document.addEventListener("click", function(e){
+  const btn=e.target.closest("button,.button,[role='button'],a");
+  if(!btn) return;
+  const t=String(btn.textContent||btn.value||"").toLowerCase();
+  if(t.includes("add invoice photo") || t.includes("invoice photo") || t.includes("receipt photo")){
+    e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+    rwdOcrOpenImport(null, ()=>{ if(typeof setRoute==="function") setRoute("home"); });
+    return false;
+  }
+}, true);
+
+/* CSS */
+(function(){
+  const st=document.createElement("style");
+  st.textContent=`.rwd-ocr-table{display:grid;gap:7px}.rwd-ocr-head,.rwd-ocr-row{display:grid;grid-template-columns:1fr 1.5fr .45fr .7fr .7fr;gap:6px}.rwd-ocr-row input{padding:8px;border-radius:10px;font-size:13px}@media(max-width:650px){.rwd-ocr-head{display:none}.rwd-ocr-row{grid-template-columns:1fr}}`;
+  document.head.appendChild(st);
+})();
